@@ -1,11 +1,8 @@
 import { openDB, txDone, reqDone } from './idb.js';
-import {
-  appendSTA,
-  exportKeyJwk, importPubKeyJwk, randomHex, getChainHead, getChainLen
-} from './state.js';
+import { appendSTA, exportKeyJwk, importPubKeyJwk, randomHex, getChainHead, getChainLen } from './state.js';
 
 const DB_NAME = 'balancechain_html_pwa';
-const DB_VER = 1;
+const DB_VER = 2;
 
 let db;
 let installPrompt = null;
@@ -23,7 +20,11 @@ const els = {
   btnInstall: document.getElementById('btnInstall'),
   pwaStatus: document.getElementById('pwaStatus'),
   swStatus: document.getElementById('swStatus'),
+  iosSheet: document.getElementById('iosSheet'),
+  btnCloseSheet: document.getElementById('btnCloseSheet'),
 };
+
+const BACKUP_URL = './__bc_backup.json';
 
 function bubble(text, meta, cls='me'){
   const d = document.createElement('div');
@@ -34,6 +35,15 @@ function bubble(text, meta, cls='me'){
   m.textContent = meta;
   d.appendChild(m);
   return d;
+}
+
+function isIOS() {
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua);
+}
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 }
 
 async function initDB() {
@@ -89,6 +99,13 @@ async function refreshStatus(hik) {
   const head = await getChainHead(db);
   els.head.textContent = head === 'GENESIS' ? 'GENESIS' : head.slice(0, 24) + '…';
   els.len.textContent = String(await getChainLen(db));
+
+  const standalone = isStandalone();
+  const ios = isIOS();
+  els.pwaStatus.className = standalone ? 'ok' : 'warn';
+  if (standalone) els.pwaStatus.textContent = 'PWA: installed';
+  else if (ios) els.pwaStatus.textContent = 'PWA: iOS (Share → Add to Home Screen)';
+  else els.pwaStatus.textContent = 'PWA: not installed';
 }
 
 async function sendLocal(identity) {
@@ -96,7 +113,6 @@ async function sendLocal(identity) {
   if (!text) return;
   els.msg.value = '';
 
-  // One call: appendSTA() handles deterministic STA construction, signing, replay guard, and atomic writes.
   const res = await appendSTA(db, identity, 'chat.append', { text });
   if (!res.ok) {
     els.chat.appendChild(bubble('Append rejected: ' + res.reason, new Date().toLocaleString(), 'sys'));
@@ -117,13 +133,17 @@ async function resetAll() {
   location.reload();
 }
 
-async function exportAll() {
+async function exportAllToObject() {
   const exportObj = {};
   for (const storeName of ['state_chain','sync_log','messages','meta','keys']) {
     const tx = db.transaction([storeName], 'readonly');
     exportObj[storeName] = await reqDone(tx.objectStore(storeName).getAll());
     await txDone(tx);
   }
+  return exportObj;
+}
+
+async function downloadExport(exportObj) {
   const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -133,41 +153,53 @@ async function exportAll() {
   URL.revokeObjectURL(url);
 }
 
+async function exportAll() {
+  const exportObj = await exportAllToObject();
+  await downloadExport(exportObj);
+  return exportObj;
+}
+
+async function importFromObject(obj) {
+  const stores = ['state_chain','sync_log','messages','meta','keys'];
+  const tx = db.transaction(stores, 'readwrite');
+  try {
+    for (const s of stores) tx.objectStore(s).clear();
+
+    (obj.state_chain || []).sort((a,b)=>a.seq-b.seq).forEach(r => tx.objectStore('state_chain').put(r));
+    (obj.sync_log || []).forEach(r => tx.objectStore('sync_log').put(r));
+    (obj.messages || []).sort((a,b)=>a.seq-b.seq).forEach(r => tx.objectStore('messages').put(r));
+    (obj.meta || []).forEach(r => tx.objectStore('meta').put(r));
+    (obj.keys || []).forEach(r => tx.objectStore('keys').put(r));
+  } catch (e) {
+    try { tx.abort(); } catch {}
+    throw e;
+  }
+  await txDone(tx);
+}
+
 async function importAll() {
-  alert('Import is intentionally minimal in this build. Use Export for backup. Full import/merge can be added later without breaking local determinism.');
-}
-
-function setupInstall() {
-  const ua = navigator.userAgent || '';
-  const isIOS = /iPad|iPhone|iPod/.test(ua);
-  // iOS Safari does not support beforeinstallprompt. Install is via Share -> Add to Home Screen.
-  if (isIOS) {
-    els.btnInstall.style.display = 'none';
-  }
-
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    installPrompt = e;
-    els.btnInstall.style.display = 'inline-flex';
-  });
-  els.btnInstall.onclick = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    await installPrompt.userChoice;
-    installPrompt = null;
-    els.btnInstall.style.display = 'none';
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json';
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const txt = await file.text();
+    const obj = JSON.parse(txt);
+    await importFromObject(obj.data ? obj.data : obj);
+    location.reload();
   };
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-  els.pwaStatus.className = isStandalone ? 'ok' : 'warn';
-  if (isStandalone) {
-    els.pwaStatus.textContent = 'PWA: installed';
-  } else if (isIOS) {
-    els.pwaStatus.textContent = 'PWA: iOS (Share → Add to Home Screen)';
-  } else {
-    els.pwaStatus.textContent = 'PWA: not installed';
-  }
+  input.click();
 }
 
+async function hasAnyMessages() {
+  const tx = db.transaction(['messages'], 'readonly');
+  const count = await reqDone(tx.objectStore('messages').count());
+  await txDone(tx);
+  return (count || 0) > 0;
+}
+
+// ---------- Service Worker ----------
 async function setupSW() {
   if (!('serviceWorker' in navigator)) {
     els.swStatus.className = 'warn';
@@ -176,6 +208,7 @@ async function setupSW() {
   }
   try {
     await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    await navigator.serviceWorker.ready;
     els.swStatus.className = 'ok';
     els.swStatus.textContent = 'SW: registered';
   } catch (e) {
@@ -185,8 +218,116 @@ async function setupSW() {
   }
 }
 
+function swPost(msg) {
+  return new Promise((resolve) => {
+    if (!navigator.serviceWorker?.controller) return resolve({ ok:false, reason:'no_controller' });
+    const onMsg = (ev) => {
+      const d = ev.data || {};
+      if (d.type === 'BACKUP_SAVED' || d.type === 'BACKUP_CLEARED') {
+        navigator.serviceWorker.removeEventListener('message', onMsg);
+        resolve(d);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onMsg);
+    navigator.serviceWorker.controller.postMessage(msg);
+    setTimeout(() => {
+      navigator.serviceWorker.removeEventListener('message', onMsg);
+      resolve({ ok:false, reason:'timeout' });
+    }, 3000);
+  });
+}
+
+async function saveBackupToSW(exportObj) {
+  const res = await swPost({ type:'SAVE_BACKUP', payload: exportObj });
+  return !!res.ok;
+}
+
+async function tryAutoRestoreFromSW() {
+  const any = await hasAnyMessages();
+  if (any) return false;
+
+  try {
+    const r = await fetch(BACKUP_URL, { cache: 'no-store' });
+    if (!r.ok) return false;
+    const j = await r.json();
+    const obj = j.data || j;
+    if (!obj || !obj.messages || obj.messages.length === 0) return false;
+
+    await importFromObject(obj);
+    await swPost({ type:'CLEAR_BACKUP' });
+    return true;
+  } catch (e) {
+    console.warn('Auto-restore failed', e);
+    return false;
+  }
+}
+
+// ---------- Install Flow ----------
+function setupInstall() {
+  const ios = isIOS();
+
+  if (ios) {
+    els.btnInstall.style.display = 'inline-flex';
+    els.btnInstall.textContent = 'Install (iOS)';
+    els.btnInstall.onclick = () => { els.iosSheet.style.display = 'flex'; };
+    els.btnCloseSheet.onclick = () => { els.iosSheet.style.display = 'none'; };
+    return;
+  }
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    els.btnInstall.style.display = 'inline-flex';
+  });
+
+  els.btnInstall.onclick = async () => {
+    if (!installPrompt) return;
+
+    els.btnInstall.disabled = true;
+    els.btnInstall.textContent = 'Preparing…';
+
+    // ✅ One-click automation:
+    // 1) Export (downloads file)
+    // 2) Save the same backup into SW cache
+    // 3) Trigger install prompt
+    try {
+      const exportObj = await exportAllToObject();
+      await downloadExport(exportObj);
+      await saveBackupToSW(exportObj);
+    } catch (e) {
+      console.warn('Pre-install backup failed', e);
+    }
+
+    els.btnInstall.textContent = 'Installing…';
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+
+    installPrompt = null;
+    els.btnInstall.style.display = 'none';
+    els.btnInstall.disabled = false;
+    els.btnInstall.textContent = 'Install';
+  };
+}
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && db) {
+    try { await loadMessages(); } catch {}
+  }
+});
+
 (async function main(){
   await initDB();
+
+  // SW first (needed for backup bridge)
+  await setupSW();
+
+  // Auto-restore if this is a fresh install
+  const restored = await tryAutoRestoreFromSW();
+  if (restored) {
+    location.reload();
+    return;
+  }
+
   const identity = await getOrCreateIdentity();
   await refreshStatus(identity.hik);
   await loadMessages();
@@ -199,5 +340,4 @@ async function setupSW() {
   els.btnImport.onclick = importAll;
 
   setupInstall();
-  await setupSW();
 })();
