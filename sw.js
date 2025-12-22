@@ -30,7 +30,11 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
+
+  // Only handle real web requests
+  const url = new URL(req.url);
   if (req.method !== 'GET') return;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
@@ -39,7 +43,10 @@ self.addEventListener('fetch', (event) => {
 
     try {
       const res = await fetch(req);
-      if (res && res.ok) cache.put(req, res.clone());
+      // Only cache successful basic/cors responses
+      if (res && res.ok && (res.type === 'basic' || res.type === 'cors')) {
+        await cache.put(req, res.clone());
+      }
       return res;
     } catch (e) {
       if (req.mode === 'navigate') return cache.match('./index.html');
