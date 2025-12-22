@@ -1,14 +1,18 @@
-// Simple offline cache-first Service Worker (no build tools required)
-const CACHE = 'balancechain-html-v1';
+// Service Worker (GitHub Pages-safe)
+const CACHE = 'balancechain-html-v2';
+
+function u(path) {
+  return new URL(path, self.registration.scope).toString();
+}
+
 const ASSETS = [
-  './',
-  './index.html',
-  './app.js',
-  './idb.js',
-  './state.js',
-  './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png'
+  u('index.html'),
+  u('app.js'),
+  u('idb.js'),
+  u('state.js'),
+  u('manifest.webmanifest'),
+  u('icons/icon-192.png'),
+  u('icons/icon-512.png'),
 ];
 
 self.addEventListener('install', (event) => {
@@ -30,16 +34,19 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
+
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const cached = await cache.match(req, { ignoreSearch: true });
     if (cached) return cached;
+
     try {
       const res = await fetch(req);
       if (res && res.ok) cache.put(req, res.clone());
       return res;
     } catch {
-      if (req.mode === 'navigate') return cache.match('./index.html');
+      // Offline fallback for navigations
+      if (req.mode === 'navigate') return cache.match(u('index.html'));
       throw;
     }
   })());
