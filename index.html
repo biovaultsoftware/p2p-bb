@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>BalanceChain PWA (HTML)</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0b1220; color:#e5e7eb; }
+    header { padding:16px 18px; border-bottom:1px solid rgba(255,255,255,.08); display:flex; align-items:center; justify-content:space-between; gap:12px;}
+    header .title { font-weight:700; letter-spacing:.2px; }
+    header .meta { font-size:12px; opacity:.8; }
+    button { background:#1f2937; color:#fff; border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:10px 12px; cursor:pointer; }
+    button:hover { border-color: rgba(255,255,255,.24); }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    .card { background:#0f172a; border:1px solid rgba(255,255,255,.10); border-radius:16px; padding:14px; }
+    .card h3 { margin:0 0 8px 0; font-size:14px; opacity:.9; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding:7px 10px; border-radius:999px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.10); font-size:12px;}
+    .chat { height: 58vh; min-height: 340px; overflow:auto; padding: 14px; display:flex; flex-direction:column; gap:10px; }
+    .bubble { max-width: 78%; padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,.10); }
+    .me { align-self:flex-end; background:rgba(34,197,94,.10); }
+    .sys { align-self:flex-start; background:rgba(59,130,246,.08); }
+    .bubble .small { font-size:11px; opacity:.75; margin-top:6px;}
+    .composer { display:flex; gap:10px; padding: 12px; border-top:1px solid rgba(255,255,255,.08); }
+    input[type="text"] { flex:1; background:#0b1220; color:#e5e7eb; border:1px solid rgba(255,255,255,.10); border-radius:12px; padding:12px; outline:none; }
+    input[type="text"]:focus { border-color: rgba(255,255,255,.24); }
+    .grid { display:grid; grid-template-columns: 1.2fr .8fr; gap: 12px; }
+    @media (max-width: 900px){ .grid{ grid-template-columns: 1fr; } }
+    .warn { color:#fbbf24; font-size:12px; opacity:.95; }
+    .ok { color:#22c55e; font-size:12px; opacity:.95; }
+    .err { color:#fb7185; font-size:12px; opacity:.95; }
+    code { background: rgba(255,255,255,.06); padding: 2px 6px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="title">BalanceChain PWA (HTML/JS)</div>
+      <div class="meta">Local-first deterministic state chain (no build step). IndexedDB + WebCrypto (ECDSA P-256).</div>
+    </div>
+    <div class="row">
+      <button id="btnInstall" style="display:none;">Install</button>
+      <button id="btnExport">Export</button>
+      <button id="btnImport">Import</button>
+      <button id="btnReset">Reset</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="grid">
+      <div class="card" style="padding:0;">
+        <div class="chat" id="chat"></div>
+        <div class="composer">
+          <input id="msg" type="text" placeholder="Type a message (creates STA + appends to chain)..." />
+          <button id="send">Send</button>
+        </div>
+      </div>
+
+      <div class="row" style="align-items:stretch;">
+        <div class="card" style="flex:1; min-width: 280px;">
+          <h3>Node Status</h3>
+          <div class="pill"><span>HIK</span> <code id="hik">...</code></div><br><br>
+          <div class="pill"><span>Chain Head</span> <code id="head">...</code></div><br><br>
+          <div class="pill"><span>Chain Length</span> <code id="len">0</code></div><br><br>
+          <div id="pwaStatus" class="warn">PWA: not installed</div>
+          <div id="swStatus" class="warn">SW: not registered</div>
+          <div style="margin-top:10px; font-size:12px; opacity:.85; line-height:1.5;">
+            This demo is <b>fully offline</b>. It appends signed STAs locally and replays deterministically.<br>
+            For peer delivery (WebRTC + signal fabric), wire your servers later — this is the stable local core.
+          </div>
+        </div>
+
+        <div class="card" style="flex:1; min-width: 280px;">
+          <h3>Rules</h3>
+          <div style="font-size:12px; line-height:1.55; opacity:.9;">
+            <ul style="margin:0; padding-left:18px;">
+              <li>State is authoritative only after <code>appendSTA()</code> succeeds.</li>
+              <li>Append is atomic: chain + nonce log + interpreted store in one transaction.</li>
+              <li>Determinism: deep canonical JSON + SHA-256.</li>
+              <li>Replay attacks rejected by nonce reuse.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
