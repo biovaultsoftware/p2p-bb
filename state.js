@@ -88,7 +88,7 @@ export function staSignable(sta) {
   return canonicalize(clean);
 }
 
-// ✅ Safari-safe append: NO await inside IDB transaction
+// ✅ Safari-safe append: absolutely NO await inside IDB transaction
 export async function appendSTA(db, identity, type, payload) {
   // 1) Compute everything async BEFORE transaction
   const prevHash = await getChainHead(db);
@@ -98,40 +98,56 @@ export async function appendSTA(db, identity, type, payload) {
   const sta = createSTA(identity, prevHash, seq, type, payload);
   const signable = staSignable(sta);
 
-  // deterministic head hash
   const bodyHash = await sha256Hex(signable);
   const signature = await sign(identity.privateKey, bodyHash);
   sta.signature = signature;
 
   const newHead = await sha256Hex(`${prevHash}|${bodyHash}|${signature}|${sta.nonce}|${sta.seq}`);
 
-  // 2) Now do atomic writes synchronously (no await until txDone)
-  const tx = db.transaction(['state_chain','sync_log','messages','meta'], 'readwrite');
-  try {
-    // Replay protection: nonce must be unique
-    const existing = await reqDone(tx.objectStore('sync_log').get(sta.nonce));
-    if (existing) { try { tx.abort(); } catch {} return { ok:false, reason:'replay' }; }
+  // 2) Atomic IndexedDB transaction with ZERO awaits (Safari/iOS safe)
+  return new Promise((resolve) => {
+    const tx = db.transaction(['state_chain','sync_log','messages','meta'], 'readwrite');
 
-    tx.objectStore('state_chain').add(sta);
-    tx.objectStore('sync_log').add({ nonce: sta.nonce, ts: sta.timestamp });
+    const stateChain = tx.objectStore('state_chain');
+    const syncLog = tx.objectStore('sync_log');
+    const messages = tx.objectStore('messages');
+    const meta = tx.objectStore('meta');
 
-    if (sta.type === 'chat.append') {
-      tx.objectStore('messages').add({
-        id: `${sta.seq}:${sta.nonce}`,
-        seq: sta.seq,
-        ts: sta.timestamp,
-        text: String(sta.payload?.text ?? ''),
-        hik: sta.hik
-      });
-    }
+    // Replay protection (nonce check) must be inside the SAME tx
+    const checkReq = syncLog.get(sta.nonce);
 
-    tx.objectStore('meta').put({ key: 'chain_head', value: newHead });
-    tx.objectStore('meta').put({ key: 'chain_len', value: sta.seq });
+    checkReq.onsuccess = () => {
+      if (checkReq.result) {
+        try { tx.abort(); } catch {}
+        resolve({ ok: false, reason: 'replay' });
+        return;
+      }
 
-    await txDone(tx);
-    return { ok:true, head:newHead, len:sta.seq };
-  } catch (e) {
-    try { tx.abort(); } catch {}
-    return { ok:false, reason:'tx_abort', error:String(e?.message ?? e) };
-  }
+      // Append state
+      stateChain.add(sta);
+      syncLog.add({ nonce: sta.nonce, ts: sta.timestamp });
+
+      if (sta.type === 'chat.append') {
+        messages.add({
+          id: `${sta.seq}:${sta.nonce}`,
+          seq: sta.seq,
+          ts: sta.timestamp,
+          text: String(sta.payload?.text ?? ''),
+          hik: sta.hik
+        });
+      }
+
+      meta.put({ key: 'chain_head', value: newHead });
+      meta.put({ key: 'chain_len', value: sta.seq });
+    };
+
+    checkReq.onerror = () => {
+      try { tx.abort(); } catch {}
+      resolve({ ok: false, reason: 'nonce_check_failed' });
+    };
+
+    tx.oncomplete = () => resolve({ ok: true, head: newHead, len: sta.seq });
+    tx.onabort = () => resolve({ ok: false, reason: 'tx_abort', error: String(tx.error || 'tx abort') });
+    tx.onerror = () => resolve({ ok: false, reason: 'tx_error', error: String(tx.error || 'tx error') });
+  });
 }
