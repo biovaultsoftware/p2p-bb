@@ -1,0 +1,7 @@
+name = "bc-lightning-signal"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[durable_objects]
+# For production: use Durable Objects for multi-instance routing
+# In this minimal demo, in-memory Map is per-instance only.

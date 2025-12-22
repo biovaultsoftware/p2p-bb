@@ -1,4 +1,4 @@
-const VERSION = 'bc-pwa-v4';
+const VERSION = 'bc-lightning-v1';
 const STATIC_CACHE = `bc-static-${VERSION}`;
 const BACKUP_CACHE = 'bc-backup';
 const BACKUP_URL = '/__bc_backup.json';
@@ -9,6 +9,8 @@ const STATIC_ASSETS = [
   './app.js',
   './idb.js',
   './state.js',
+  './signal.js',
+  './p2p.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png'

@@ -5,12 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <meta name="theme-color" content="#0b1220"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <link rel="manifest" href="./manifest.webmanifest"/>
   <link rel="icon" href="./icons/icon-192.png"/>
   <link rel="apple-touch-icon" href="./icons/icon-192.png"/>
-  <title>BalanceChain PWA (HTML)</title>
+  <title>BC Lightning Messaging</title>
   <style>
     :root{
       --bg:#070b14; --panel:#0c1325; --panel2:#0b1220; --border:rgba(255,255,255,.08);
@@ -19,110 +17,76 @@
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
     }
     body{ margin:0; background:radial-gradient(1200px 600px at 15% 0%, #101a35 0%, var(--bg) 60%); color:var(--text); }
-    .wrap{ max-width:1100px; margin:18px auto; padding:0 14px; }
-    .top{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-    h1{ margin:0; font-size:22px; letter-spacing:.2px; }
-    .sub{ color:var(--muted); font-size:13px; margin-top:4px; }
-    .actions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
-    button{
-      appearance:none; border:1px solid var(--border); background:linear-gradient(180deg,var(--btn),#0c1325);
-      color:var(--text); padding:10px 14px; border-radius:12px; font-weight:600; cursor:pointer;
-    }
-    button:hover{ background:linear-gradient(180deg,var(--btnh),#0c1325); }
-    button:disabled{ opacity:.5; cursor:not-allowed; }
-    .grid{ display:grid; grid-template-columns: 1fr 360px; gap:14px; margin-top:14px; }
-    @media (max-width:980px){ .grid{ grid-template-columns:1fr; } }
-    .card{ background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--border); border-radius:18px; padding:14px; }
-    .chat{ height:54vh; min-height:380px; overflow:auto; padding:12px; border-radius:16px; background:rgba(0,0,0,.18); border:1px solid var(--border); }
-    .bubble{ max-width:72%; padding:10px 12px; border-radius:14px; margin:8px 0; background:rgba(16,30,60,.55); border:1px solid rgba(255,255,255,.06); }
-    .bubble.me{ margin-left:auto; background:rgba(13,43,42,.65); }
-    .bubble.sys{ max-width:100%; background:rgba(255,92,92,.10); border-color:rgba(255,92,92,.22); }
-    .small{ font-size:12px; color:var(--muted); margin-top:4px; }
-    .composer{ display:flex; gap:10px; margin-top:12px; }
-    input{
-      flex:1; padding:12px 12px; border-radius:14px; background:rgba(0,0,0,.18);
-      border:1px solid var(--border); color:var(--text); outline:none;
-    }
-    .pill{ display:inline-flex; gap:10px; align-items:center; padding:8px 10px; border-radius:999px;
-      background:rgba(0,0,0,.22); border:1px solid var(--border); font-size:12px; color:var(--muted); }
-    .pill strong{ color:var(--text); font-weight:700; }
-    .ok{ color:var(--ok) } .warn{ color:var(--warn) } .err{ color:var(--err) }
-    .rules{ color:var(--muted); font-size:13px; line-height:1.55; }
-    .overlay{
-      position:fixed; inset:0; display:none; align-items:flex-end; justify-content:center;
-      background:rgba(0,0,0,.55); padding:14px;
-    }
-    .sheet{
-      width:min(720px,100%); background:linear-gradient(180deg,#101a35,#0b1220);
-      border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:14px;
-      box-shadow:0 12px 40px rgba(0,0,0,.45);
-    }
-    .sheet h2{ margin:0 0 6px 0; font-size:16px; }
-    .sheet p{ margin:0; color:var(--muted); font-size:13px; line-height:1.55; }
-    .sheet .row{ display:flex; justify-content:flex-end; gap:10px; margin-top:12px; }
+    .wrap{ max-width:1200px; margin:18px auto; padding:0 14px; }
+    .hdr{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+    h1{ margin:0; font-size:18px; letter-spacing:.2px; }
+    .sub{ color:var(--muted); font-size:12px; margin-top:4px; }
+    .pill{ font-size:12px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:rgba(0,0,0,.18); }
+    .grid{ display:grid; grid-template-columns: 340px 1fr; gap:12px; margin-top:12px; }
+    .card{ background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
+    .card h2{ margin:0; padding:12px 14px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
+    .pane{ padding:12px 14px; }
+    input, button{ font:inherit; }
+    .row{ display:flex; gap:8px; }
+    .row input{ flex:1; background:rgba(0,0,0,.25); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 10px; outline:none; }
+    .btn{ background:var(--btn); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 12px; cursor:pointer; }
+    .btn:hover{ background:var(--btnh); }
+    .btn.small{ padding:8px 10px; font-size:12px; }
+    .list{ display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+    .item{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 10px; border-radius:12px; border:1px solid var(--border); background:rgba(0,0,0,.18); cursor:pointer; }
+    .item .a{ font-size:13px; }
+    .item .b{ font-size:11px; color:var(--muted); }
+    .chat{ height:60vh; overflow:auto; padding:14px; }
+    .bubble{ max-width:78%; padding:10px 12px; border-radius:14px; margin:6px 0; border:1px solid var(--border); background:rgba(0,0,0,.18); }
+    .me{ margin-left:auto; background:rgba(53,208,127,.08); }
+    .meta{ font-size:11px; color:var(--muted); margin-top:3px; }
+    .composer{ display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border); }
+    .composer input{ flex:1; }
+    .statusline{ display:flex; gap:10px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:10px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="top">
+    <div class="hdr">
       <div>
-        <h1>BalanceChain PWA (HTML/JS)</h1>
-        <div class="sub">Local-first deterministic state chain (no build step). IndexedDB + WebCrypto (ECDSA P-256).</div>
+        <h1>BC Lightning Messaging</h1>
+        <div class="sub">Communication is a shared state between two humans — receiver pulls, sender holds intents.</div>
       </div>
-      <div class="actions">
-        <button id="btnInstall" style="display:none">Install</button>
-        <button id="btnExport">Export</button>
-        <button id="btnImport">Import</button>
-        <button id="btnReset">Reset</button>
-      </div>
+      <div class="pill" id="mePill">Me: …</div>
+    </div>
+
+    <div class="statusline">
+      <div>Chain head: <span id="head">—</span></div>
+      <div>Len: <span id="len">—</span></div>
+      <div>Signal: <span id="signalStatus">—</span></div>
+      <div>P2P: <span id="p2pStatus">—</span></div>
     </div>
 
     <div class="grid">
       <div class="card">
-        <div id="chat" class="chat"></div>
-        <div class="composer">
-          <input id="msg" placeholder="Type a message (creates STA + appends to chain)..." autocomplete="off"/>
-          <button id="send">Send</button>
+        <h2>Contacts</h2>
+        <div class="pane">
+          <div class="row">
+            <input id="peerHid" placeholder="Paste contact HID-..." />
+            <button class="btn" id="btnAdd">Add</button>
+          </div>
+          <div class="list" id="contacts"></div>
+          <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn small" id="btnExport">Export</button>
+            <button class="btn small" id="btnImport">Import</button>
+            <button class="btn small" id="btnReset">Reset</button>
+          </div>
         </div>
       </div>
 
       <div class="card">
-        <div class="pill"><strong>Node Status</strong></div>
-        <div style="height:10px"></div>
-        <div class="pill"><strong>HIK</strong> <span id="hik">…</span></div>
-        <div style="height:10px"></div>
-        <div class="pill"><strong>Chain Head</strong> <span id="head">…</span></div>
-        <div style="height:10px"></div>
-        <div class="pill"><strong>Chain Length</strong> <span id="len">…</span></div>
-        <div style="height:12px"></div>
-        <div id="pwaStatus" class="warn">PWA: …</div>
-        <div id="swStatus" class="warn">SW: …</div>
-        <div style="height:10px"></div>
-        <div class="rules">
-          This demo is <b>fully offline</b>. It appends signed STAs locally and replays deterministically.<br/>
-          For peer delivery (WebRTC + signal fabric), wire your servers later — this is the stable local core.
+        <h2 id="chatTitle">Chat</h2>
+        <div class="chat" id="chat"></div>
+        <div class="composer">
+          <input id="msg" placeholder="Write…" />
+          <button class="btn" id="btnSync">Sync</button>
+          <button class="btn" id="send">Send</button>
         </div>
-        <div style="height:12px"></div>
-        <div class="card" style="padding:12px">
-          <div style="font-weight:800; margin-bottom:8px">Rules</div>
-          <div class="rules">
-            • State is authoritative only after <code>appendSTA()</code> succeeds.<br/>
-            • Append is atomic: chain + nonce log + interpreted store in one transaction.<br/>
-            • Determinism: deep canonical JSON + SHA-256.<br/>
-            • Replay attacks rejected by nonce reuse.
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="iosSheet" class="overlay">
-    <div class="sheet">
-      <h2>Install on iPhone/iPad</h2>
-      <p>iOS Safari does not show an Install button. Use <b>Share</b> → <b>Add to Home Screen</b>.</p>
-      <p style="margin-top:8px">This app keeps data locally. If your iOS version isolates storage between Safari and the Home Screen app, use <b>Export</b> before installing and <b>Import</b> after opening from the Home Screen.</p>
-      <div class="row">
-        <button id="btnCloseSheet">OK</button>
       </div>
     </div>
   </div>
