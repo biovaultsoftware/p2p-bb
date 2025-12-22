@@ -1,7 +1,7 @@
 import { openDB, txDone, reqDone } from './idb.js';
 import {
-  createSTA, staSignable, appendSTA,
-  exportKeyJwk, importPubKeyJwk, sign, randomHex, getChainHead, getChainLen
+  appendSTA,
+  exportKeyJwk, importPubKeyJwk, randomHex, getChainHead, getChainLen
 } from './state.js';
 
 const DB_NAME = 'balancechain_html_pwa';
@@ -96,15 +96,8 @@ async function sendLocal(identity) {
   if (!text) return;
   els.msg.value = '';
 
-  const len = await getChainLen(db);
-  const seq = len + 1;
-  const prev = await getChainHead(db);
-
-  const sta = await createSTA({ hik: identity.hik, pubJwk: identity.pubJwk }, prev, seq, 'chat.append', { text });
-  const signable = staSignable(sta);
-  sta.signature = await sign(identity.privateKey, signable);
-
-  const res = await appendSTA(db, sta, identity.publicKey);
+  // One call: appendSTA() handles deterministic STA construction, signing, replay guard, and atomic writes.
+  const res = await appendSTA(db, identity, 'chat.append', { text });
   if (!res.ok) {
     els.chat.appendChild(bubble('Append rejected: ' + res.reason, new Date().toLocaleString(), 'sys'));
   } else {
@@ -145,6 +138,13 @@ async function importAll() {
 }
 
 function setupInstall() {
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua);
+  // iOS Safari does not support beforeinstallprompt. Install is via Share -> Add to Home Screen.
+  if (isIOS) {
+    els.btnInstall.style.display = 'none';
+  }
+
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     installPrompt = e;
@@ -159,7 +159,13 @@ function setupInstall() {
   };
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   els.pwaStatus.className = isStandalone ? 'ok' : 'warn';
-  els.pwaStatus.textContent = isStandalone ? 'PWA: installed' : 'PWA: not installed';
+  if (isStandalone) {
+    els.pwaStatus.textContent = 'PWA: installed';
+  } else if (isIOS) {
+    els.pwaStatus.textContent = 'PWA: iOS (Share → Add to Home Screen)';
+  } else {
+    els.pwaStatus.textContent = 'PWA: not installed';
+  }
 }
 
 async function setupSW() {
