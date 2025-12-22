@@ -1,18 +1,15 @@
-// Service Worker (GitHub Pages-safe)
+// BalanceChain PWA Service Worker (safe + GitHub Pages friendly)
 const CACHE = 'balancechain-html-v2';
 
-function u(path) {
-  return new URL(path, self.registration.scope).toString();
-}
-
 const ASSETS = [
-  u('index.html'),
-  u('app.js'),
-  u('idb.js'),
-  u('state.js'),
-  u('manifest.webmanifest'),
-  u('icons/icon-192.png'),
-  u('icons/icon-512.png'),
+  './',
+  './index.html',
+  './app.js',
+  './idb.js',
+  './state.js',
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -26,7 +23,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.map(k => (k !== CACHE) ? caches.delete(k) : Promise.resolve()));
+    await Promise.all(keys.map((k) => (k !== CACHE ? caches.delete(k) : Promise.resolve())));
     self.clients.claim();
   })());
 });
@@ -44,10 +41,9 @@ self.addEventListener('fetch', (event) => {
       const res = await fetch(req);
       if (res && res.ok) cache.put(req, res.clone());
       return res;
-    } catch {
-      // Offline fallback for navigations
-      if (req.mode === 'navigate') return cache.match(u('index.html'));
-      throw;
+    } catch (e) {
+      if (req.mode === 'navigate') return cache.match('./index.html');
+      throw e;
     }
   })());
 });
