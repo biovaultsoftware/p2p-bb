@@ -1,4 +1,4 @@
-// BalanceChain local core: canonicalize + hashing + STA append/validate
+// BalanceChain local core: canonicalize + hashing + STA append (Safari-safe)
 import { txDone, reqDone } from './idb.js';
 
 // DO NOT MODIFY: Locked for cross-runtime determinism
@@ -20,20 +20,6 @@ export function randomHex(bytes = 16) {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
   return [...arr].map(b => b.toString(16).padStart(2,'0')).join('');
-}
-
-export async function exportKeyJwk(publicKey) {
-  return await crypto.subtle.exportKey('jwk', publicKey);
-}
-
-export async function importPubKeyJwk(jwk) {
-  return await crypto.subtle.importKey(
-    'jwk',
-    jwk,
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
-    ['verify']
-  );
 }
 
 export async function sign(privateKey, dataStr) {
@@ -74,26 +60,26 @@ export async function setMeta(db, key, value) {
 }
 
 export async function getChainHead(db) {
-  return await getMeta(db, 'chain_head') || 'GENESIS';
+  return (await getMeta(db, 'chain_head')) || 'GENESIS';
 }
 
 export async function getChainLen(db) {
   return (await getMeta(db, 'chain_len')) || 0;
 }
 
-export async function createSTA({ hik, pubJwk }, prevHash, seq, type, payload) {
-  const sta = {
+export function createSTA(identity, prevHash, seq, type, payload) {
+  // IMPORTANT: this is synchronous (Safari-safe)
+  return {
     v: 1,
-    hik,
+    hik: identity.hik,
     seq,
     timestamp: Date.now(),
     nonce: randomHex(16),
     type,
     payload,
     prev_hash: prevHash,
-    author: { hik, pubJwk },
+    author: { hik: identity.hik, pubJwk: identity.pubJwk },
   };
-  return sta;
 }
 
 export function staSignable(sta) {
@@ -102,45 +88,30 @@ export function staSignable(sta) {
   return canonicalize(clean);
 }
 
-export async function appendSTA(db, identity, payload) {
-  // 1️⃣ Do ALL async work FIRST
-  const canonical = canonicalize(payload);
-  const hash = await sha256(canonical);
-  const sig = await sign(identity.privateKey, hash);
-  const sta = {
-    payload,
-    hash,
-    sig,
-    nonce: crypto.randomUUID(),
-    ts: Date.now()
-  };
+// ✅ Safari-safe append: NO await inside IDB transaction
+export async function appendSTA(db, identity, type, payload) {
+  // 1) Compute everything async BEFORE transaction
+  const prevHash = await getChainHead(db);
+  const prevLen = await getChainLen(db);
+  const seq = prevLen + 1;
 
-  // 2️⃣ ONLY NOW open IndexedDB transaction
-  return new Promise((resolve) => {
-    const tx = db.transaction(['chain', 'nonces'], 'readwrite');
-    const chain = tx.objectStore('chain');
-    const nonces = tx.objectStore('nonces');
+  const sta = createSTA(identity, prevHash, seq, type, payload);
+  const signable = staSignable(sta);
 
-    nonces.get(sta.nonce).onsuccess = (e) => {
-      if (e.target.result) {
-        tx.abort();
-        resolve(false);
-        return;
-      }
+  // deterministic head hash
+  const bodyHash = await sha256Hex(signable);
+  const signature = await sign(identity.privateKey, bodyHash);
+  sta.signature = signature;
 
-      chain.add(sta);
-      nonces.add({ nonce: sta.nonce });
+  const newHead = await sha256Hex(`${prevHash}|${bodyHash}|${signature}|${sta.nonce}|${sta.seq}`);
 
-      tx.oncomplete = () => resolve(true);
-      tx.onabort = () => resolve(false);
-    };
-  });
-}
-
-
-  // Atomic transaction: chain + nonce log + interpreted store (messages)
+  // 2) Now do atomic writes synchronously (no await until txDone)
   const tx = db.transaction(['state_chain','sync_log','messages','meta'], 'readwrite');
   try {
+    // Replay protection: nonce must be unique
+    const existing = await reqDone(tx.objectStore('sync_log').get(sta.nonce));
+    if (existing) { try { tx.abort(); } catch {} return { ok:false, reason:'replay' }; }
+
     tx.objectStore('state_chain').add(sta);
     tx.objectStore('sync_log').add({ nonce: sta.nonce, ts: sta.timestamp });
 
@@ -154,14 +125,13 @@ export async function appendSTA(db, identity, payload) {
       });
     }
 
-    const head = await sha256Hex(signable + '|' + sta.signature);
-    tx.objectStore('meta').put({ key: 'chain_head', value: head });
+    tx.objectStore('meta').put({ key: 'chain_head', value: newHead });
     tx.objectStore('meta').put({ key: 'chain_len', value: sta.seq });
 
     await txDone(tx);
-    return { ok: true, head, len: sta.seq };
+    return { ok:true, head:newHead, len:sta.seq };
   } catch (e) {
     try { tx.abort(); } catch {}
-    return { ok: false, reason: 'tx_abort', error: String(e?.message ?? e) };
+    return { ok:false, reason:'tx_abort', error:String(e?.message ?? e) };
   }
 }
