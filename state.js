@@ -102,21 +102,41 @@ export function staSignable(sta) {
   return canonicalize(clean);
 }
 
-export async function appendSTA(db, sta, publicKey) {
-  const signable = staSignable(sta);
-  const okSig = await verify(publicKey, signable, sta.signature);
-  if (!okSig) return { ok: false, reason: 'bad_signature' };
+export async function appendSTA(db, identity, payload) {
+  // 1️⃣ Do ALL async work FIRST
+  const canonical = canonicalize(payload);
+  const hash = await sha256(canonical);
+  const sig = await sign(identity.privateKey, hash);
+  const sta = {
+    payload,
+    hash,
+    sig,
+    nonce: crypto.randomUUID(),
+    ts: Date.now()
+  };
 
-  const prev = await getChainHead(db);
-  if (sta.prev_hash !== prev) return { ok: false, reason: 'bad_prev_hash' };
+  // 2️⃣ ONLY NOW open IndexedDB transaction
+  return new Promise((resolve) => {
+    const tx = db.transaction(['chain', 'nonces'], 'readwrite');
+    const chain = tx.objectStore('chain');
+    const nonces = tx.objectStore('nonces');
 
-  // Nonce replay protection
-  {
-    const tx = db.transaction(['sync_log'], 'readonly');
-    const exists = await reqDone(tx.objectStore('sync_log').get(sta.nonce));
-    await txDone(tx);
-    if (exists) return { ok: false, reason: 'replay_nonce' };
-  }
+    nonces.get(sta.nonce).onsuccess = (e) => {
+      if (e.target.result) {
+        tx.abort();
+        resolve(false);
+        return;
+      }
+
+      chain.add(sta);
+      nonces.add({ nonce: sta.nonce });
+
+      tx.oncomplete = () => resolve(true);
+      tx.onabort = () => resolve(false);
+    };
+  });
+}
+
 
   // Atomic transaction: chain + nonce log + interpreted store (messages)
   const tx = db.transaction(['state_chain','sync_log','messages','meta'], 'readwrite');
