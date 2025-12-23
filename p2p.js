@@ -1,22 +1,34 @@
-const RTC_CFG = {
-  iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
-  iceCandidatePoolSize: 4,
-};
+// p2p.js — WebRTC DataChannel transport (no server persistence)
+// Signaling is done via SignalClient (websocket). Messages are "pull-based": receiver pulls,
+// sender responds with a batch from its outbox. Optional E2EE (ECDH -> AES-GCM) for payloads.
+
+const DEFAULT_ICE = [{ urls: ["stun:stun.l.google.com:19302"] }];
+const DEFAULT_RTC_CFG = { iceServers: DEFAULT_ICE, iceCandidatePoolSize: 4 };
+
+function makeRtcCfg(override){
+  if (override && Array.isArray(override.iceServers) && override.iceServers.length){
+    return { ...DEFAULT_RTC_CFG, iceServers: override.iceServers };
+  }
+  return DEFAULT_RTC_CFG;
+}
 
 function j(x){ try{return JSON.stringify(x);}catch{return"";} }
-function b64u(bytes){ return btoa(String.fromCharCode(...bytes)); }
-function unb64u(s){ const bin=atob(s); const out=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; }
+function b64(bytes){ return btoa(String.fromCharCode(...bytes)); }
+function unb64(s){ const bin=atob(s); const out=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; }
 
 export class P2PManager {
-  constructor({ myHid, signal, ecdh, onPullRequest, onIntentBatch, onAck, onStatus }) {
-    this.myHid=myHid;
-    this.signal=signal;
-    this.ecdh=ecdh; // {publicJwk, privateKey}
-    this.onPullRequest=onPullRequest || (async ()=>({items:[]}));
-    this.onIntentBatch=onIntentBatch || (async ()=>{});
-    this.onAck=onAck || (async ()=>{});
-    this.onStatus=onStatus || (()=>{});
-    this.peers=new Map(); // hid -> session
+  constructor({ myHid, signal, ecdh, rtcOverride, onPullRequest, onIntentBatch, onAck, onStatus }) {
+    this.myHid = myHid;
+    this.signal = signal;
+    this.ecdh = ecdh; // {publicJwk, privateKey}
+    this.rtcOverride = rtcOverride || null;
+
+    this.onPullRequest = onPullRequest || (async ()=>({items:[]}));
+    this.onIntentBatch = onIntentBatch || (async ()=>{});
+    this.onAck = onAck || (async ()=>{});
+    this.onStatus = onStatus || (()=>{});
+
+    this.peers = new Map(); // hid -> session
   }
 
   async dial(peerHid){
@@ -33,6 +45,15 @@ export class P2PManager {
   isConnected(peerHid){
     const s=this.peers.get(peerHid);
     return !!s?.dc && s.dc.readyState==="open";
+  }
+
+  async waitConnected(peerHid, timeoutMs=5000){
+    const start=Date.now();
+    while(Date.now()-start < timeoutMs){
+      if(this.isConnected(peerHid)) return true;
+      await new Promise(r=>setTimeout(r, 60));
+    }
+    return this.isConnected(peerHid);
   }
 
   async onSignal({from, data}){
@@ -56,9 +77,7 @@ export class P2PManager {
       try{ await s.pc.addIceCandidate(msg.candidate);}catch{}
       return;
     }
-    // poke/presence are handled in app.js via signal client directly
   }
-
 
   async sendAck(peerHid, channelId, upToSeq){
     const s=this.peers.get(peerHid);
@@ -79,7 +98,7 @@ export class P2PManager {
     let s=this.peers.get(peerHid);
     if(s) return s;
 
-    const pc=new RTCPeerConnection(RTC_CFG);
+    const pc=new RTCPeerConnection(makeRtcCfg(this.rtcOverride));
     s={peerHid, pc, dc:null, initiator, sharedKey:null, peerPubJwk:null};
     this.peers.set(peerHid,s);
     this.onStatus({peerHid, state:"created"});
@@ -118,9 +137,7 @@ export class P2PManager {
     dc.onopen=async ()=>{
       this.onStatus({peerHid:s.peerHid, state:"connected"});
       // Key exchange (optional): exchange ECDH public keys, derive AES-GCM key
-      try{
-        dc.send(j({t:"k", pub:this.ecdh.publicJwk}));
-      }catch{}
+      try{ dc.send(j({t:"k", pub:this.ecdh.publicJwk})); }catch{}
     };
 
     dc.onmessage=async (ev)=>{
@@ -148,16 +165,16 @@ export class P2PManager {
       if(m.t==="pull"){
         const {channelId, sinceSeq}=m;
         const resp = await this.onPullRequest({from:s.peerHid, channelId, sinceSeq});
-        // resp.items: [{seq,msgId,text}] -> encrypt if key present
         const items = [];
         for(const it of (resp.items||[])){
+          const payload = {seq:it.seq,msgId:it.msgId,text:it.text,ts:it.ts||Date.now()};
           if(s.sharedKey){
             const iv=crypto.getRandomValues(new Uint8Array(12));
-            const pt=new TextEncoder().encode(JSON.stringify({seq:it.seq,msgId:it.msgId,text:it.text,ts:it.ts||Date.now()}));
+            const pt=new TextEncoder().encode(JSON.stringify(payload));
             const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM", iv}, s.sharedKey, pt));
-            items.push({seq:it.seq, msgId:it.msgId, iv:b64u(iv), ct:b64u(ct)});
+            items.push({seq:payload.seq, msgId:payload.msgId, iv:b64(iv), ct:b64(ct), ts:payload.ts});
           }else{
-            items.push({seq:it.seq, msgId:it.msgId, iv:null, ct:null, text:it.text, ts:it.ts||Date.now()});
+            items.push(payload);
           }
         }
         dc.send(j({t:"batch", channelId, items, e2ee:!!s.sharedKey}));
@@ -170,18 +187,15 @@ export class P2PManager {
       }
 
       if(m.t==="batch"){
-        // decrypt if needed
         const out=[];
         for(const it of (m.items||[])){
           if(m.e2ee && s.sharedKey && it.iv && it.ct){
             try{
-              const iv=unb64u(it.iv);
-              const ct=unb64u(it.ct);
+              const iv=unb64(it.iv);
+              const ct=unb64(it.ct);
               const pt=new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv}, s.sharedKey, ct));
               out.push(JSON.parse(new TextDecoder().decode(pt)));
-            }catch{
-              // drop
-            }
+            }catch{}
           }else if(it.text){
             out.push({seq:it.seq,msgId:it.msgId,text:it.text,ts:it.ts||Date.now()});
           }

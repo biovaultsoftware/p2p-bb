@@ -5,87 +5,134 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <meta name="theme-color" content="#0b1220"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <link rel="manifest" href="./manifest.webmanifest"/>
   <link rel="icon" href="./icons/icon-192.png"/>
   <link rel="apple-touch-icon" href="./icons/icon-192.png"/>
   <title>BC Lightning Messaging</title>
   <style>
     :root{
-      --bg:#070b14; --panel:#0c1325; --panel2:#0b1220; --border:rgba(255,255,255,.08);
-      --text:#e8eefc; --muted:rgba(232,238,252,.72); --ok:#35d07f; --warn:#f7c948; --err:#ff5c5c;
-      --btn:#111a33; --btnh:#16224a;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      --bg:#070c16; --panel:#0b1220; --panel2:#0a1020;
+      --text:#eaf0ff; --muted:rgba(234,240,255,.65);
+      --line:rgba(255,255,255,.08);
+      --acc:#62f0c8;
+      --shadow: 0 18px 55px rgba(0,0,0,.55);
+      --r:18px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     }
-    body{ margin:0; background:radial-gradient(1200px 600px at 15% 0%, #101a35 0%, var(--bg) 60%); color:var(--text); }
-    .wrap{ max-width:1200px; margin:18px auto; padding:0 14px; }
-    .hdr{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
-    h1{ margin:0; font-size:18px; letter-spacing:.2px; }
-    .sub{ color:var(--muted); font-size:12px; margin-top:4px; }
-    .pill{ font-size:12px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:rgba(0,0,0,.18); }
-    .grid{ display:grid; grid-template-columns: 340px 1fr; gap:12px; margin-top:12px; }
-    .card{ background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
-    .card h2{ margin:0; padding:12px 14px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
-    .pane{ padding:12px 14px; }
-    input, button{ font:inherit; }
-    .row{ display:flex; gap:8px; }
-    .row input{ flex:1; background:rgba(0,0,0,.25); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 10px; outline:none; }
-    .btn{ background:var(--btn); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 12px; cursor:pointer; }
-    .btn:hover{ background:var(--btnh); }
-    .btn.small{ padding:8px 10px; font-size:12px; }
-    .list{ display:flex; flex-direction:column; gap:6px; margin-top:10px; }
-    .item{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 10px; border-radius:12px; border:1px solid var(--border); background:rgba(0,0,0,.18); cursor:pointer; }
-    .item .a{ font-size:13px; }
-    .item .b{ font-size:11px; color:var(--muted); }
-    .chat{ height:60vh; overflow:auto; padding:14px; }
-    .bubble{ max-width:78%; padding:10px 12px; border-radius:14px; margin:6px 0; border:1px solid var(--border); background:rgba(0,0,0,.18); }
-    .me{ margin-left:auto; background:rgba(53,208,127,.08); }
-    .meta{ font-size:11px; color:var(--muted); margin-top:3px; }
-    .composer{ display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border); }
-    .composer input{ flex:1; }
-    .statusline{ display:flex; gap:10px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin-top:10px; }
+    html,body{height:100%; margin:0; background:radial-gradient(1200px 800px at 30% 0%, #0b1630 0%, var(--bg) 55%, #04060c 100%); color:var(--text);}
+    .wrap{max-width:1240px; margin:0 auto; padding:22px; box-sizing:border-box;}
+    h1{margin:0; font-size:28px; letter-spacing:.2px}
+    .sub{margin-top:6px; color:var(--muted); font-size:13px}
+    .top{display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:16px}
+    .pill{display:inline-flex; align-items:center; gap:10px; padding:10px 12px; border-radius:999px; background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--text); font-weight:700; font-size:12px}
+    .grid{display:grid; grid-template-columns: 360px 1fr; gap:14px; align-items:stretch}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); overflow:hidden}
+    .card .hd{padding:14px 16px; border-bottom:1px solid var(--line); font-weight:800; letter-spacing:.2px}
+    .card .bd{padding:14px 16px}
+    .row{display:flex; gap:10px; align-items:center}
+    input, button{
+      font: inherit;
+      border-radius:14px;
+      padding:12px 12px;
+      border:1px solid var(--line);
+      background:rgba(0,0,0,.25);
+      color:var(--text);
+      outline:none;
+    }
+    input::placeholder{color:rgba(234,240,255,.35)}
+    button{cursor:pointer; font-weight:800; background:rgba(255,255,255,.06)}
+    button:hover{border-color:rgba(255,255,255,.18)}
+    button.primary{background:rgba(98,240,200,.12); border-color:rgba(98,240,200,.35)}
+    .contacts{display:flex; flex-direction:column; gap:10px}
+    .contacts .list{display:flex; flex-direction:column; gap:8px}
+    .item{
+      display:flex; justify-content:space-between; gap:10px;
+      padding:12px; border-radius:16px; border:1px solid var(--line);
+      background:rgba(0,0,0,.18);
+      cursor:pointer;
+    }
+    .item:hover{border-color:rgba(255,255,255,.16)}
+    .item .a{font-weight:900}
+    .item .b{color:var(--muted); font-size:12px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:250px}
+    .chatWrap{display:flex; flex-direction:column; height:72vh; min-height:520px}
+    .chatTitle{display:flex; align-items:center; justify-content:space-between; gap:10px}
+    .chat{flex:1; overflow:auto; padding:14px 16px; background:rgba(0,0,0,.18)}
+    .bubble{max-width:72%; padding:12px 12px; border-radius:16px; border:1px solid var(--line); background:rgba(255,255,255,.06); margin:10px 0}
+    .bubble.me{margin-left:auto; background:rgba(98,240,200,.10); border-color:rgba(98,240,200,.24)}
+    .bubble .meta{margin-top:6px; font-size:11px; color:rgba(234,240,255,.55)}
+    .composer{display:flex; gap:10px; padding:12px; border-top:1px solid var(--line); background:rgba(0,0,0,.15)}
+    .composer input{flex:1}
+    .tiny{font-size:12px; color:var(--muted)}
+    .statusLine{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}
+    .kbar{display:flex; gap:10px; margin-top:10px}
+    .kbar input{flex:1}
+    #brainAnswer{white-space:pre-wrap; background:rgba(0,0,0,.18); border:1px solid var(--line); border-radius:16px; padding:12px; min-height:44px}
+    @media (max-width: 980px){
+      .grid{grid-template-columns: 1fr}
+      .chatWrap{height:64vh; min-height:420px}
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="hdr">
+    <div class="top">
       <div>
         <h1>BC Lightning Messaging</h1>
         <div class="sub">Communication is a shared state between two humans — receiver pulls, sender holds intents.</div>
+        <div class="statusLine">
+          <div class="pill">Chain head: <span id="head">…</span></div>
+          <div class="pill">Len: <span id="len">…</span></div>
+          <div class="pill">Signal: <span id="signalStatus">…</span></div>
+          <div class="pill">P2P: <span id="p2pStatus">—</span></div>
+        </div>
       </div>
       <div class="pill" id="mePill">Me: …</div>
     </div>
 
-    <div class="statusline">
-      <div>Chain head: <span id="head">—</span></div>
-      <div>Len: <span id="len">—</span></div>
-      <div>Signal: <span id="signalStatus">—</span></div>
-      <div>P2P: <span id="p2pStatus">—</span></div>
-    </div>
-
     <div class="grid">
       <div class="card">
-        <h2>Contacts</h2>
-        <div class="pane">
+        <div class="hd">Contacts</div>
+        <div class="bd contacts">
           <div class="row">
-            <input id="peerHid" placeholder="Paste contact HID-..." />
-            <button class="btn" id="btnAdd">Add</button>
+            <input id="peerHid" placeholder="Paste contact HID-..."/>
+            <button id="btnAdd" class="primary">Add</button>
           </div>
-          <div class="list" id="contacts"></div>
-          <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn small" id="btnExport">Export</button>
-            <button class="btn small" id="btnImport">Import</button>
-            <button class="btn small" id="btnReset">Reset</button>
+          <div class="row tiny">
+            <span>Signal URL:</span>
+            <input id="signalUrl" placeholder="wss://your-worker.example/signal (optional)" style="flex:1; padding:10px 12px"/>
+            <button id="btnSaveSignal">Save</button>
+          </div>
+          <div id="contacts" class="list"></div>
+          <div class="row" style="gap:8px; flex-wrap:wrap">
+            <button id="btnExport">Export</button>
+            <button id="btnImport">Import</button>
+            <button id="btnReset">Reset</button>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <h2 id="chatTitle">Chat</h2>
-        <div class="chat" id="chat"></div>
+      <div class="card chatWrap">
+        <div class="hd chatTitle">
+          <div id="chatTitle">Chat</div>
+          <div class="row">
+            <button id="btnSync">Sync</button>
+            <button id="send" class="primary">Send</button>
+          </div>
+        </div>
+        <div id="chat" class="chat"></div>
         <div class="composer">
-          <input id="msg" placeholder="Write…" />
-          <button class="btn" id="btnSync">Sync</button>
-          <button class="btn" id="send">Send</button>
+          <input id="msg" placeholder="Write..." autocomplete="off"/>
+        </div>
+        <div class="bd" style="border-top:1px solid var(--line)">
+          <div class="tiny" style="font-weight:900; margin-bottom:8px">Chat Brain (offline)</div>
+          <div class="kbar">
+            <input id="brainQuery" placeholder="Ask: find PDF, search keywords, phones, emails, amounts..."/>
+            <button id="brainAsk">Ask</button>
+          </div>
+          <div style="height:10px"></div>
+          <div id="brainAnswer">—</div>
         </div>
       </div>
     </div>

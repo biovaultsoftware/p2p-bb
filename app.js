@@ -1,10 +1,16 @@
 import { openDB, txDone, reqDone } from './idb.js';
-import { appendSTA, exportKeyJwk, importPubKeyJwk, randomHex, getChainHead, getChainLen, computeHID, deriveChannelId } from './state.js';
+import { appendSTA, exportKeyJwk, randomHex, getChainHead, getChainLen, computeHID, deriveChannelId } from './state.js';
 import { SignalClient } from './signal.js';
 import { P2PManager } from './p2p.js';
+import { kbUpsertMessage, kbSearch } from './kb.js';
 
 const DB_NAME = 'bc_lightning_pwa';
-const DB_VER = 3;
+const DB_VER = 6; // bump when schema changes
+
+const DEFAULT_SIGNAL_PATH = '/signal';
+const DEFAULT_SIGNAL_KEY = 'bc_signal_urls';
+
+const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302'] }];
 
 let db;
 let identity; // { hik, hid, pubJwk, privateKey, ecdhPubJwk, ecdhPrivKey }
@@ -21,6 +27,9 @@ const els = {
   btnAdd: document.getElementById('btnAdd'),
   contacts: document.getElementById('contacts'),
   chatTitle: document.getElementById('chatTitle'),
+  brainQuery: document.getElementById('brainQuery'),
+  brainAsk: document.getElementById('brainAsk'),
+  brainAnswer: document.getElementById('brainAnswer'),
   chat: document.getElementById('chat'),
   msg: document.getElementById('msg'),
   send: document.getElementById('send'),
@@ -28,13 +37,43 @@ const els = {
   btnExport: document.getElementById('btnExport'),
   btnImport: document.getElementById('btnImport'),
   btnReset: document.getElementById('btnReset'),
+  signalUrl: document.getElementById('signalUrl'),
+  btnSaveSignal: document.getElementById('btnSaveSignal'),
 };
+
+function toast(msg){
+  try{
+    let t=document.getElementById('toast');
+    if(!t){
+      t=document.createElement('div');
+      t.id='toast';
+      t.style.position='fixed';
+      t.style.left='50%';
+      t.style.bottom='18px';
+      t.style.transform='translateX(-50%)';
+      t.style.padding='10px 14px';
+      t.style.borderRadius='14px';
+      t.style.background='rgba(0,0,0,.65)';
+      t.style.border='1px solid rgba(255,255,255,.15)';
+      t.style.color='white';
+      t.style.fontWeight='800';
+      t.style.zIndex='9999';
+      t.style.maxWidth='86vw';
+      t.style.textAlign='center';
+      document.body.appendChild(t);
+    }
+    t.textContent=msg;
+    t.style.opacity='1';
+    clearTimeout(t._h);
+    t._h=setTimeout(()=>{t.style.opacity='0';},1800);
+  }catch{}
+}
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
 async function initDB(){
   db = await openDB(DB_NAME, DB_VER, {
-    upgrade(db, oldV, newV){
+    upgrade(db, oldV){
       if(!db.objectStoreNames.contains('state_chain')) db.createObjectStore('state_chain', { keyPath:'seq' });
       if(!db.objectStoreNames.contains('sync_log')) db.createObjectStore('sync_log', { keyPath:'nonce' });
       if(!db.objectStoreNames.contains('messages')) {
@@ -54,6 +93,11 @@ async function initDB(){
       }
       if(!db.objectStoreNames.contains('presence')) db.createObjectStore('presence', { keyPath:'hid' });
       if(!db.objectStoreNames.contains('pokes')) db.createObjectStore('pokes', { keyPath:'id' });
+
+      // Offline "chat brain"
+      if(!db.objectStoreNames.contains('kb_docs')) db.createObjectStore('kb_docs', { keyPath:'id' });
+      if(!db.objectStoreNames.contains('kb_terms')) db.createObjectStore('kb_terms', { keyPath:'term' });
+      if(!db.objectStoreNames.contains('kb_entities')) db.createObjectStore('kb_entities', { keyPath:'key' });
     }
   });
 }
@@ -105,87 +149,26 @@ async function ensureIdentity(){
   identity = { hik, hid, pubJwk, privateKey: kp.privateKey, ecdhPubJwk, ecdhPrivKey: kp2.privateKey };
 }
 
+function getSavedSignalUrls(){
+  try{
+    const raw=localStorage.getItem(DEFAULT_SIGNAL_KEY);
+    if(!raw) return null;
+    const arr=JSON.parse(raw);
+    if(Array.isArray(arr) && arr.length) return arr;
+  }catch{}
+  return null;
+}
+
 function signalUrls(){
+  const saved = getSavedSignalUrls();
+  if(saved) return saved;
+
+  // same-origin route (requires a WebSocket endpoint at /signal, e.g. Cloudflare Worker)
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  return [
-    proto + location.host + '/signal', // Cloudflare Worker endpoint recommended
-  ];
+  return [ proto + location.host + DEFAULT_SIGNAL_PATH ];
 }
 
 let signal, p2p;
-
-async function initNetwork(){
-  signal = new SignalClient(signalUrls(), {
-    hid: identity.hid,
-    onMessage: async (m) => {
-      const from = m.from;
-      const data = m.data || {};
-      if(data.kind === 'offer' || data.kind === 'answer' || data.kind === 'ice'){
-        await p2p.onSignal({from, data});
-        return;
-      }
-      if(data.kind === 'poke'){
-        // auto-sync from this contact if it's one of ours
-        await maybeSync(from);
-        return;
-      }
-      if(data.kind === 'presence'){
-        // cache presence
-        await putPresence(from, data.ts, data.ttl||120, data.hints||null);
-        return;
-      }
-    },
-    onStatus: (s) => {
-      const txt = s.state + (s.url ? ` (${s.url.replace(/^wss?:\/\//,'')})` : '');
-      els.signalStatus.textContent = txt;
-    }
-  });
-
-  p2p = new P2PManager({
-    myHid: identity.hid,
-    signal,
-    ecdh: { publicJwk: identity.ecdhPubJwk, privateKey: identity.ecdhPrivKey },
-    onPullRequest: async ({from, channelId, sinceSeq}) => {
-      return { items: await getOutboxItems(channelId, from, sinceSeq) };
-    },
-    onIntentBatch: async ({from, channelId, items}) => {
-      let maxSeq = 0;
-      for(const it of items){
-        maxSeq = Math.max(maxSeq, Number(it.seq||0));
-        await appendSTA(db, identity, 'msg.delivered', {
-          channelId,
-          fromHid: from,
-          msgId: it.msgId,
-          seqInChannel: it.seq,
-          text: it.text
-        });
-      }
-      if(maxSeq>0){
-        await appendSTA(db, identity, 'msg.ack', { channelId, peerHid: from, upToSeq: maxSeq });
-        await p2p.sendAck(from, channelId, maxSeq);
-      }
-      await refreshChat();
-    },
-    onAck: async ({from, channelId, upToSeq}) => {
-      await markOutboxDelivered(channelId, from, upToSeq);
-      await refreshChat();
-    },
-    onStatus: (s) => {
-      els.p2pStatus.textContent = s.peerHid ? `${s.peerHid.slice(0,10)}… ${s.state}` : String(s.state||'');
-    }
-  });
-
-  signal.start();
-
-  // presence heartbeat to contacts (best-effort)
-  setInterval(async ()=>{
-    const cs = await listContacts();
-    if(cs.length && signal.isOpen()){
-      const payload = { kind:'presence', ts: Date.now(), ttl: 120, hints: null };
-      signal.broadcast(cs.map(x=>x.hid), payload);
-    }
-  }, 45000);
-}
 
 async function putPresence(hid, ts, ttl, hints){
   const tx=db.transaction(['presence'], 'readwrite');
@@ -203,16 +186,31 @@ async function listContacts(){
 
 async function ensureChannel(peerHid){
   const channelId = await deriveChannelId(identity.hid, peerHid);
-  const tx=db.transaction(['channels'],'readwrite');
-  const store=tx.objectStore('channels');
-  const existing = await reqDone(store.get(channelId));
+
+  // IMPORTANT: never keep an IndexedDB transaction open across an await
+  // (it may auto-close, causing TransactionInactiveError).
+  const tx1 = db.transaction(['channels'], 'readonly');
+  const store1 = tx1.objectStore('channels');
+  const existing = await reqDone(store1.get(channelId));
+  await txDone(tx1);
+
   if(!existing){
     await appendSTA(db, identity, 'channel.open', { channelId, peerHid });
-    store.put({ channelId, peerHid, lastPulledSeq: 0, lastAckedSeq: 0, createdAt: Date.now() });
+
+    const tx2 = db.transaction(['channels'], 'readwrite');
+    tx2.objectStore('channels').put({
+      channelId,
+      peerHid,
+      lastPulledSeq: 0,
+      lastAckedSeq: 0,
+      createdAt: Date.now()
+    });
+    await txDone(tx2);
   }
-  await txDone(tx);
+
   return channelId;
 }
+
 
 async function getOutboxItems(channelId, toHid, sinceSeq){
   const tx=db.transaction(['outbox'],'readonly');
@@ -264,7 +262,7 @@ async function renderContacts(){
       </div>
       <div class="b">tap</div>
     </div>
-  `).join('') || `<div class="b">No contacts yet. Add a HID.</div>`;
+  `).join('') || `<div class="tiny">No contacts yet. Add a HID.</div>`;
 
   for(const el of els.contacts.querySelectorAll('.item')){
     el.onclick = async ()=>{
@@ -279,7 +277,7 @@ async function renderContacts(){
 
 async function refreshChat(){
   if(!activeChannel){
-    els.chat.innerHTML = `<div class="meta">Pick a contact.</div>`;
+    els.chat.innerHTML = `<div class="tiny">Pick a contact.</div>`;
     return;
   }
   const tx=db.transaction(['messages','outbox'],'readonly');
@@ -292,7 +290,6 @@ async function refreshChat(){
   const m = (msgs||[]).filter(x=>x.channelId===activeChannel).sort((a,b)=>a.ts-b.ts);
   const o = (outb||[]).filter(x=>x.channelId===activeChannel && x.toHid===activePeer).sort((a,b)=>a.createdAt-b.createdAt);
 
-  // merge: show settled incoming + local outgoing pending/sent
   const bubbles = [];
   for(const x of m){
     const me = x.dir==='out';
@@ -308,72 +305,99 @@ async function refreshChat(){
       ${esc(b.text)}
       <div class="meta">${esc(new Date(b.ts).toLocaleString())} • ${esc(b.meta)}</div>
     </div>
-  `).join('') || `<div class="meta">No messages yet.</div>`;
+  `).join('') || `<div class="tiny">No messages yet.</div>`;
 
   els.chat.scrollTop = els.chat.scrollHeight;
 }
 
-async function maybeSync(peerHid){
-  if(!peerHid) return;
-  const channelId = await ensureChannel(peerHid);
-  // dial + pull
-  try{
-    if(!p2p.isConnected(peerHid)) await p2p.dial(peerHid);
-  }catch{}
-  const since = await getLastPulled(channelId);
-  await p2p.sendPull(peerHid, channelId, since);
-  await setLastPulled(channelId, since); // will be bumped by ack later
-}
-
-async function getLastPulled(channelId){
+async function getChannelRec(channelId){
   const tx=db.transaction(['channels'],'readonly');
   const s=tx.objectStore('channels');
   const ch=await reqDone(s.get(channelId));
   await txDone(tx);
-  return Number(ch?.lastPulledSeq || 0);
+  return ch || null;
 }
 
-async function setLastPulled(channelId, v){
+async function setChannelRec(channelId, patch){
   const tx=db.transaction(['channels'],'readwrite');
   const s=tx.objectStore('channels');
   const ch=await reqDone(s.get(channelId));
   if(ch){
-    ch.lastPulledSeq = Number(v||0);
+    Object.assign(ch, patch);
     s.put(ch);
   }
   await txDone(tx);
 }
 
+async function maybeSync(peerHid){
+  if(!peerHid) return;
+  const channelId = await ensureChannel(peerHid);
+
+  // dial if needed
+  try{
+    if(!p2p.isConnected(peerHid)){
+      await p2p.dial(peerHid);
+      await p2p.waitConnected(peerHid, 6000);
+    }
+  }catch{}
+
+  if(!p2p.isConnected(peerHid)){
+    toast('Saved locally. P2P offline (will deliver when receiver is online).');
+    return;
+  }
+
+  const ch = await getChannelRec(channelId);
+  const since = Number(ch?.lastPulledSeq || 0);
+  await p2p.sendPull(peerHid, channelId, since);
+}
+
 async function addContact(hid){
   hid = String(hid||'').trim();
-  if(!hid.startsWith('HID-')) return;
+  if(!hid.startsWith('HID-')) { toast('Invalid HID'); return; }
+  if(hid === identity.hid) { toast('That is your HID'); return; }
+
   await appendSTA(db, identity, 'contact.add', { hid });
   const tx=db.transaction(['contacts'],'readwrite');
   tx.objectStore('contacts').put({ hid, nickname:null, addedAt: Date.now() });
   await txDone(tx);
+  els.peerHid.value='';
   await renderContacts();
 }
 
+async function sendPoke(toHid, channelId){
+  // Best-effort: poke via signaling (no message content).
+  try{ signal.send(toHid, { kind:'poke', channelId, ts: Date.now() }); }catch{}
+}
+
+async function commitIntent(peerHid, text){
+  const channelId = await ensureChannel(peerHid);
+  const seqInChannel = await nextSeq(channelId, peerHid);
+  const msgId = `${channelId}:${seqInChannel}:${randomHex(10)}`;
+  await appendSTA(db, identity, 'msg.intent', { channelId, toHid: peerHid, msgId, seqInChannel, text });
+  // index locally for offline search
+  try{ await kbUpsertMessage(db, { id: msgId, peerHid, dir:'out', ts: Date.now(), text }); }catch{}
+  return { channelId, peerHid, msgId, seqInChannel };
+}
+
 async function sendMessage(){
-  if(!activePeer || !activeChannel) return;
-  const text = String(els.msg.value||'').trim();
+  const text = (els.msg.value || '').trim();
   if(!text) return;
+  if(!activePeer){ toast('Select a contact first.'); return; }
+
   els.msg.value='';
 
-  const msgId = 'MSG-' + randomHex(10);
-  const seqInChannel = await nextSeq(activeChannel, activePeer);
+  try{
+    const intent = await commitIntent(activePeer, text);
+    await refreshMeta();
+    await refreshChat();
 
-  // commit intent locally (sender-held)
-  await appendSTA(db, identity, 'msg.intent', { channelId: activeChannel, toHid: activePeer, msgId, seqInChannel, text });
-  // local echo
-  await appendSTA(db, identity, 'msg.sent', { channelId: activeChannel, toHid: activePeer, msgId, seqInChannel, text });
-
-  // poke receiver (no content)
-  if(signal.isOpen()){
-    signal.send(activePeer, { kind:'poke', channelId: activeChannel, ts: Date.now(), ttl: 300 });
+    // notify receiver (no content), then try immediate sync
+    await sendPoke(activePeer, intent.channelId);
+    await maybeSync(activePeer);
+  }catch(e){
+    console.error(e);
+    toast('Failed to save message.');
   }
-
-  await refreshChat();
 }
 
 async function exportAll(){
@@ -400,7 +424,7 @@ async function importAll(){
     const text=await file.text();
     const parsed=JSON.parse(text);
     const dump=parsed.dump||{};
-    // clear & restore
+
     const stores=[...db.objectStoreNames];
     const tx=db.transaction(stores,'readwrite');
     for(const s of stores) tx.objectStore(s).clear();
@@ -417,13 +441,128 @@ async function importAll(){
 
 async function hardReset(){
   db.close();
-  await new Promise((res, rej)=>{
+  await new Promise((res)=>{
     const req=indexedDB.deleteDatabase(DB_NAME);
     req.onsuccess=()=>res();
     req.onerror=()=>res();
     req.onblocked=()=>res();
   });
   location.reload();
+}
+
+// ---- Network ----
+async function initNetwork(){
+  signal = new SignalClient(signalUrls(), {
+    hid: identity.hid,
+    onMessage: async (m) => {
+      const from = m.from;
+      const data = m.data || {};
+      if(data.kind === 'offer' || data.kind === 'answer' || data.kind === 'ice'){
+        await p2p.onSignal({from, data});
+        return;
+      }
+      if(data.kind === 'poke'){
+        // receiver got poke -> sync that peer
+        if(await isContact(from)) await maybeSync(from);
+        return;
+      }
+      if(data.kind === 'presence'){
+        await putPresence(from, data.ts || Date.now(), data.ttl||120, data.hints||null);
+        return;
+      }
+    },
+    onStatus: (s) => {
+      const txt = s.state + (s.url ? ` (${String(s.url).replace(/^wss?:\/\//,'')})` : '');
+      els.signalStatus.textContent = txt;
+    }
+  });
+
+  const turn = (window.__TURN && window.__TURN.urls) ? [window.__TURN] : [];
+  const iceServers = ICE_SERVERS.concat(turn);
+
+  p2p = new P2PManager({
+    myHid: identity.hid,
+    signal,
+    rtcOverride: { iceServers },
+    ecdh: { publicJwk: identity.ecdhPubJwk, privateKey: identity.ecdhPrivKey },
+
+    // Sender: receiver pulls from us -> return outbox items
+    onPullRequest: async ({from, channelId, sinceSeq}) => {
+      return { items: await getOutboxItems(channelId, from, sinceSeq) };
+    },
+
+    // Receiver: we got batch of intents from sender -> settle locally + ack
+    onIntentBatch: async ({from, channelId, items}) => {
+      let maxSeq = 0;
+      for(const it of (items||[])){
+        maxSeq = Math.max(maxSeq, Number(it.seq||0));
+        await appendSTA(db, identity, 'msg.delivered', {
+          channelId,
+          fromHid: from,
+          msgId: it.msgId,
+          seqInChannel: it.seq,
+          text: it.text
+        });
+        try{ await kbUpsertMessage(db, { id: it.msgId, peerHid: from, dir:'in', ts: it.ts||Date.now(), text: it.text }); }catch{}
+      }
+
+      if(maxSeq>0){
+        await setChannelRec(channelId, { lastPulledSeq: maxSeq });
+        await appendSTA(db, identity, 'msg.ack', { channelId, peerHid: from, upToSeq: maxSeq });
+        await p2p.sendAck(from, channelId, maxSeq);
+      }
+
+      if(from === activePeer) await refreshChat();
+      await refreshMeta();
+    },
+
+    // Sender: receiver acked -> mark delivered
+    onAck: async ({from, channelId, upToSeq}) => {
+      await markOutboxDelivered(channelId, from, upToSeq);
+      if(from === activePeer) await refreshChat();
+    },
+
+    onStatus: (s) => {
+      els.p2pStatus.textContent = s.peerHid ? `${s.peerHid.slice(0,10)}… ${s.state}` : String(s.state||'');
+    }
+  });
+
+  signal.start();
+
+  // presence heartbeat (best effort)
+  setInterval(async ()=>{
+    const cs = await listContacts();
+    if(cs.length && signal.isOpen()){
+      const payload = { kind:'presence', ts: Date.now(), ttl: 120, hints: null };
+      signal.broadcast(cs.map(x=>x.hid), payload);
+    }
+  }, 45000);
+}
+
+async function isContact(hid){
+  const tx=db.transaction(['contacts'],'readonly');
+  const rec=await reqDone(tx.objectStore('contacts').get(hid));
+  await txDone(tx);
+  return !!rec;
+}
+
+// ---- Chat Brain ----
+async function runBrain(){
+  const q = (els.brainQuery.value||'').trim();
+  if(!q){ els.brainAnswer.textContent='—'; return; }
+  const peer = activePeer || null;
+  const hits = await kbSearch(db, q, { peerHid: peer, limit: 12 });
+  if(!hits.length){
+    els.brainAnswer.textContent = 'No matches (offline).';
+    return;
+  }
+  const lines = hits.map(h=>{
+    const when = new Date(h.ts||Date.now()).toLocaleString();
+    const who = h.dir==='out' ? 'Me →' : '← Peer';
+    const text = String(h.text||'').slice(0,200);
+    return `• ${when}  ${who}  ${text}`;
+  });
+  els.brainAnswer.textContent = lines.join('\n');
 }
 
 // ---- UI wiring ----
@@ -434,22 +573,40 @@ els.btnExport.onclick = ()=> exportAll();
 els.btnImport.onclick = ()=> importAll();
 els.btnReset.onclick = ()=> hardReset();
 
-window.addEventListener('keydown', (e)=>{
-  if(e.key==='Enter' && document.activeElement===els.msg){
-    e.preventDefault(); sendMessage();
+els.brainAsk.onclick = ()=> runBrain();
+els.brainQuery.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); runBrain(); } });
+
+els.msg.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendMessage(); } });
+
+els.btnSaveSignal.onclick = ()=>{
+  const v = String(els.signalUrl.value||'').trim();
+  if(!v){
+    localStorage.removeItem(DEFAULT_SIGNAL_KEY);
+    toast('Signal URL cleared. Using same-origin /signal.');
+    return;
   }
-});
+  const arr = v.split(',').map(s=>s.trim()).filter(Boolean);
+  localStorage.setItem(DEFAULT_SIGNAL_KEY, JSON.stringify(arr));
+  toast('Signal URL saved. Reloading…');
+  location.reload();
+};
 
 // ---- boot ----
 (async function main(){
   await initDB();
   await ensureIdentity();
   await refreshMeta();
-  await renderContacts();
-  await initNetwork();
 
-  // register SW if available
+  // show saved signal url (if any)
+  const saved = getSavedSignalUrls();
+  els.signalUrl.value = saved ? saved.join(',') : '';
+
+  await renderContacts();
+
+  // register SW
   if('serviceWorker' in navigator){
     try{ await navigator.serviceWorker.register('./sw.js'); }catch{}
   }
+
+  await initNetwork();
 })();

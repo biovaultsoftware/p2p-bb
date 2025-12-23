@@ -30,23 +30,6 @@ export async function importPubKeyJwk(jwk) {
   return await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
 }
 
-
-// Public address: HID derived from public key (stable, shareable)
-export async function computeHID(pubJwk) {
-  const body = canonicalize(pubJwk);
-  const h = await sha256Hex(body);
-  return 'HID-' + h.slice(0, 24);
-}
-
-export async function deriveChannelId(hidA, hidB, genesis='1736565605') {
-  const a = String(hidA||'');
-  const b = String(hidB||'');
-  const lo = a < b ? a : b;
-  const hi = a < b ? b : a;
-  return 'CH-' + (await sha256Hex(`${lo}|${hi}|${genesis}`)).slice(0, 32);
-}
-
-
 export async function sign(privateKey, dataStr) {
   const sig = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
@@ -127,7 +110,7 @@ export async function appendSTA(db, identity, type, payload) {
   const newHead = await sha256Hex(`${prevHash}|${bodyHash}|${signature}|${sta.nonce}|${sta.seq}`);
 
   return new Promise((resolve) => {
-    const tx = db.transaction(['state_chain','sync_log','messages','meta','contacts','channels','outbox','presence','pokes'], 'readwrite');
+    const tx = db.transaction(['state_chain','sync_log','messages','meta'], 'readwrite');
     const stateChain = tx.objectStore('state_chain');
     const syncLog = tx.objectStore('sync_log');
     const messages = tx.objectStore('messages');
@@ -144,129 +127,13 @@ export async function appendSTA(db, identity, type, payload) {
       stateChain.add(sta);
       syncLog.add({ nonce: sta.nonce, ts: sta.timestamp });
 
-      // Lightning Messaging interpreter (deterministic, store-only)
       if (sta.type === 'chat.append') {
         messages.add({
           id: `${sta.seq}:${sta.nonce}`,
           seq: sta.seq,
           ts: sta.timestamp,
           text: String(sta.payload?.text ?? ''),
-          hik: sta.hik,
-          channelId: null,
-          peer: null,
-          dir: 'local'
-        });
-      }
-
-      if (sta.type === 'contact.add') {
-        const hid = String(sta.payload?.hid ?? '');
-        if (hid) {
-          tx.objectStore('contacts').put({ hid, nickname: null, addedAt: sta.timestamp });
-        }
-      }
-
-      if (sta.type === 'channel.open') {
-        const channelId = String(sta.payload?.channelId ?? '');
-        const peerHid = String(sta.payload?.peerHid ?? '');
-        if (channelId && peerHid) {
-          tx.objectStore('channels').put({ channelId, peerHid, lastPulledSeq: 0, lastAckedSeq: 0, createdAt: sta.timestamp });
-        }
-      }
-
-      // Sender-held message intent: stored in outbox (not in messages) until receiver settles
-      if (sta.type === 'msg.intent') {
-        const channelId = String(sta.payload?.channelId ?? '');
-        const toHid = String(sta.payload?.toHid ?? '');
-        const msgId = String(sta.payload?.msgId ?? '');
-        const seqInChannel = Number(sta.payload?.seqInChannel ?? 0);
-        const text = String(sta.payload?.text ?? '');
-        if (channelId && toHid && msgId) {
-          tx.objectStore('outbox').put({
-            id: msgId,
-            channelId,
-            toHid,
-            seqInChannel,
-            text,
-            createdAt: sta.timestamp,
-            status: 'pending'
-          });
-        }
-      }
-
-      // Receiver settlement: becomes the visible message in messages
-      if (sta.type === 'msg.delivered') {
-        const channelId = String(sta.payload?.channelId ?? '');
-        const fromHid = String(sta.payload?.fromHid ?? '');
-        const msgId = String(sta.payload?.msgId ?? '');
-        const seqInChannel = Number(sta.payload?.seqInChannel ?? 0);
-        const text = String(sta.payload?.text ?? '');
-        if (channelId && fromHid && msgId) {
-          messages.add({
-            id: `${sta.seq}:${sta.nonce}`,
-            seq: sta.seq,
-            ts: sta.timestamp,
-            text,
-            hik: sta.hik,
-            channelId,
-            peer: fromHid,
-            seqInChannel,
-            msgId,
-            dir: 'in'
-          });
-        }
-      }
-
-      if (sta.type === 'msg.sent') {
-        // Optional: local echo when sender commits intent (shown as pending)
-        const channelId = String(sta.payload?.channelId ?? '');
-        const toHid = String(sta.payload?.toHid ?? '');
-        const msgId = String(sta.payload?.msgId ?? '');
-        const seqInChannel = Number(sta.payload?.seqInChannel ?? 0);
-        const text = String(sta.payload?.text ?? '');
-        if (channelId && toHid && msgId) {
-          messages.add({
-            id: `${sta.seq}:${sta.nonce}`,
-            seq: sta.seq,
-            ts: sta.timestamp,
-            text,
-            hik: sta.hik,
-            channelId,
-            peer: toHid,
-            seqInChannel,
-            msgId,
-            dir: 'out'
-          });
-        }
-      }
-
-      if (sta.type === 'msg.ack') {
-        const channelId = String(sta.payload?.channelId ?? '');
-        const peerHid = String(sta.payload?.peerHid ?? '');
-        const upToSeq = Number(sta.payload?.upToSeq ?? 0);
-        if (channelId && peerHid) {
-          tx.objectStore('channels').put({ channelId, peerHid, lastPulledSeq: upToSeq, lastAckedSeq: upToSeq, createdAt: sta.timestamp });
-        }
-      }
-
-      if (sta.type === 'presence.self') {
-        const ttl = Number(sta.payload?.ttl ?? 120);
-        tx.objectStore('presence').put({
-          hid: String(sta.payload?.hid ?? sta.hik ?? ''),
-          ts: sta.timestamp,
-          expiresAt: sta.timestamp + ttl*1000,
-          hints: sta.payload?.hints ?? null
-        });
-      }
-
-      if (sta.type === 'poke.recv') {
-        const id = String(sta.payload?.id ?? sta.nonce);
-        tx.objectStore('pokes').put({
-          id,
-          fromHid: String(sta.payload?.fromHid ?? ''),
-          toHid: String(sta.payload?.toHid ?? ''),
-          channelId: String(sta.payload?.channelId ?? ''),
-          ts: sta.timestamp,
-          expiresAt: sta.timestamp + Number(sta.payload?.ttl ?? 300)*1000
+          hik: sta.hik
         });
       }
 
@@ -283,4 +150,23 @@ export async function appendSTA(db, identity, type, payload) {
     tx.onabort = () => resolve({ ok:false, reason:'tx_abort', error:String(tx.error || 'tx abort') });
     tx.onerror = () => resolve({ ok:false, reason:'tx_error', error:String(tx.error || 'tx error') });
   });
+}
+
+
+// Compute a stable Human ID (HID) from an ECDSA public JWK.
+// Deterministic: canonical JSON of selected fields -> sha256 -> HID-<hex...>
+export async function computeHID(pubJwk){
+  const pick = {
+    kty: pubJwk.kty, crv: pubJwk.crv,
+    x: pubJwk.x, y: pubJwk.y
+  };
+  const h = await sha256Hex(canonicalize(pick));
+  return 'HID-' + h.slice(0, 28) + h.slice(28, 44); // 44 hex chars (~176 bits)
+}
+
+// Derive a stable channel id for two HIDs (order-independent).
+export async function deriveChannelId(hidA, hidB){
+  const [a,b] = [String(hidA), String(hidB)].sort();
+  const h = await sha256Hex(`${a}|${b}`);
+  return 'CH-' + h.slice(0, 24);
 }

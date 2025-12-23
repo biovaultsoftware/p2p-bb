@@ -1,0 +1,9 @@
+{
+  "name": "bc-push-poke",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "express": "^4.19.2",
+    "web-push": "^3.6.7"
+  }
+}

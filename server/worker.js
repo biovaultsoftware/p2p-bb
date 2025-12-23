@@ -1,3 +1,9 @@
+
+// Push poke (best-effort) - stores subscriptions by HID (metadata only).
+// NOTE: For production/scalability, move these maps into a Durable Object / KV.
+const subs = new Map(); // hid -> PushSubscription JSON
+const VAPID_PUBLIC_KEY = (globalThis.VAPID_PUBLIC_KEY || null); // set in worker env
+
 // Minimal WebSocket signaling relay for BC Lightning Messaging
 // - routes messages by "to" HID
 // - does NOT store message payloads
